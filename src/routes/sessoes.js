@@ -8,25 +8,33 @@ const router = Router();
 // Cria uma nova sessão em andamento vinculada a um prontuário
 router.post("/", authenticateToken, async (req, res) => {
   try {
-    const { prontuario_id, paciente_id } = req.body;
+    const { paciente_id } = req.body;
 
-    if (!prontuario_id || !paciente_id) {
-      return res
-        .status(400)
-        .json({ error: "prontuario_id e paciente_id são obrigatórios." });
+    if (!paciente_id) {
+      return res.status(400).json({ error: "paciente_id é obrigatório." });
     }
 
-    // Verificar se já existe sessão em andamento para este prontuário
+    // Verificar se já existe sessão em andamento para este paciente
     const { data: existente } = await supabase
       .from("sessoes")
       .select("id")
-      .eq("prontuario_id", prontuario_id)
+      .eq("paciente_id", paciente_id)
       .eq("status", "em_andamento")
       .maybeSingle();
 
     if (existente) {
       return res.status(200).json({ id: existente.id, resumida: true });
     }
+
+    // Buscar prontuário mais recente do paciente
+    const { data: prontuarios } = await supabase
+      .from("prontuarios")
+      .select("id")
+      .eq("paciente_id", paciente_id)
+      .order("created_at", { ascending: false })
+      .limit(1);
+
+    const prontuario_id = prontuarios?.[0]?.id ?? null;
 
     const { data, error } = await supabase
       .from("sessoes")
