@@ -1,0 +1,16 @@
+name: Alertas Cron
+
+on:
+  schedule:
+    - cron: "0 * * * *" # a cada hora
+  workflow_dispatch: # permite rodar manualmente para testar
+
+jobs:
+  processar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Chamar /alertas/processar
+        run: |
+          curl -s -X GET \
+            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
+            https://podols-backend.onrender.com/alertas/processar
