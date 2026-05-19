@@ -3,7 +3,7 @@ import multer from "multer";
 import { PutObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { randomUUID } from "crypto";
 import r2, { BUCKET } from "../lib/r2.js";
-import supabase from "../lib/supabase.js";
+import { supabase } from "../lib/supabase.js";
 import { authenticateToken } from "../lib/auth.js";
 
 const router = Router();
