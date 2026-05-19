@@ -14,6 +14,7 @@ import prontuariosRouter from "./routes/prontuarios.js";
 import sessoesRouter from "./routes/sessoes.js";
 import imagensRouter from "./routes/imagens.js";
 import alertasRouter from "./routes/alertas.js";
+import consentimentosRouter from "./routes/consentimentos.js";
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -46,6 +47,7 @@ app.use("/clinica", clinicaRouter);
 app.use("/prontuarios", prontuariosRouter);
 app.use("/sessoes", sessoesRouter);
 app.use("/imagens", imagensRouter);
+app.use("/consentimentos", consentimentosRouter);
 
 // ─── INICIAR ─────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
