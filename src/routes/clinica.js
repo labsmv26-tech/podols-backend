@@ -1,60 +1,118 @@
+// src/routes/clinica.js
+// Cadastro self-service da clínica + integração AsaaS
+// POST /clinica/gerar-link — cria customer + cobrança no AsaaS
+
 import { Router } from "express";
 import { supabase } from "../lib/supabase.js";
 
 const router = Router();
-const ASAAS_URL = "https://api.asaas.com/v3";
+
+const ASAAS_BASE = "https://api.asaas.com/v3";
+const ASAAS_HEADERS = {
+  "Content-Type": "application/json",
+  access_token: process.env.ASAAS_API_KEY,
+};
+
+const PLANOS = {
+  basico: { nome: "Podols Básico", valor: 49.0 },
+  rede: { nome: "Podols Rede", valor: 129.0 },
+  bandeira: { nome: "Podols Bandeira", valor: 299.0 },
+};
+
+// ─── POST /clinica/gerar-link ─────────────────────────────────────────────────
+// Recebe: { estabelecimento_id, email, nome, cpfCnpj, plano }
+// Cria customer + cobrança no AsaaS, salva payment_url
 
 router.post("/gerar-link", async (req, res) => {
-  const { estabelecimento_id, nome, email, cpfCnpj, plano } = req.body;
+  const {
+    estabelecimento_id,
+    email,
+    nome,
+    cpfCnpj,
+    plano = "basico",
+  } = req.body;
 
-  const VALORES = { basico: 49, rede: 129, bandeira: 299 };
-  const valor = VALORES[plano] ?? 49;
+  if (!estabelecimento_id || !email || !nome || !cpfCnpj) {
+    return res
+      .status(400)
+      .json({
+        error: "Campos obrigatórios: estabelecimento_id, email, nome, cpfCnpj",
+      });
+  }
+
+  const planoInfo = PLANOS[plano];
+  if (!planoInfo) {
+    return res
+      .status(400)
+      .json({ error: "Plano inválido. Use: basico, rede ou bandeira" });
+  }
 
   try {
-    // 1. Cria customer no AsaaS
-    const custResp = await fetch(`${ASAAS_URL}/customers`, {
+    // 1. Criar customer no AsaaS
+    const resCustomer = await fetch(`${ASAAS_BASE}/customers`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        access_token: process.env.ASAAS_API_KEY,
-      },
+      headers: ASAAS_HEADERS,
       body: JSON.stringify({ name: nome, email, cpfCnpj }),
     });
-    const customer = await custResp.json();
 
-    // 2. Cria cobrança recorrente
-    const chargeResp = await fetch(`${ASAAS_URL}/payments`, {
+    const customer = await resCustomer.json();
+
+    if (!customer.id) {
+      console.error("[clinica] Erro ao criar customer AsaaS:", customer);
+      return res
+        .status(502)
+        .json({ error: "Erro ao criar cliente no sistema de pagamento" });
+    }
+
+    // 2. Criar cobrança (link de pagamento)
+    const vencimento = new Date();
+    vencimento.setDate(vencimento.getDate() + 3); // 3 dias para pagar
+
+    const resCobranca = await fetch(`${ASAAS_BASE}/payments`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        access_token: process.env.ASAAS_API_KEY,
-      },
+      headers: ASAAS_HEADERS,
       body: JSON.stringify({
         customer: customer.id,
         billingType: "UNDEFINED", // Pix + Cartão
-        value: valor,
-        dueDate: new Date(Date.now() + 86400000 * 3)
-          .toISOString()
-          .split("T")[0],
-        description: `Podols — Plano ${plano}`,
-        cycle: "MONTHLY",
+        value: planoInfo.valor,
+        dueDate: vencimento.toISOString().split("T")[0],
+        description: `${planoInfo.nome} — Podols`,
+        externalReference: estabelecimento_id,
       }),
     });
-    const charge = await chargeResp.json();
 
-    // 3. Salva no Supabase
-    await supabase
+    const cobranca = await resCobranca.json();
+
+    if (!cobranca.invoiceUrl) {
+      console.error("[clinica] Erro ao criar cobrança AsaaS:", cobranca);
+      return res.status(502).json({ error: "Erro ao gerar link de pagamento" });
+    }
+
+    // 3. Salvar customer_id e payment_url no estabelecimento
+    const { error: errUpdate } = await supabase
       .from("estabelecimentos")
       .update({
         asaas_customer_id: customer.id,
-        payment_url: charge.invoiceUrl ?? charge.bankSlipUrl,
+        payment_url: cobranca.invoiceUrl,
+        plano,
       })
       .eq("id", estabelecimento_id);
 
-    res.json({ payment_url: charge.invoiceUrl ?? charge.bankSlipUrl });
+    if (errUpdate) {
+      console.error("[clinica] Erro ao salvar no banco:", errUpdate.message);
+    }
+
+    console.log(
+      `[clinica] Link gerado para ${estabelecimento_id}: ${cobranca.invoiceUrl}`,
+    );
+
+    res.json({
+      payment_url: cobranca.invoiceUrl,
+      customer_id: customer.id,
+    });
   } catch (err) {
-    console.error("Erro gerar-link:", err);
-    res.status(500).json({ error: "Erro ao gerar link de pagamento" });
+    console.error("[clinica] Erro geral:", err.message);
+    res.status(500).json({ error: "Erro interno ao processar cadastro" });
   }
 });
 

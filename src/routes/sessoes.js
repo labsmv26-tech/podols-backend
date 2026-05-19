@@ -1,115 +1,112 @@
+// src/routes/sessoes.js
+// Rotas de sessões clínicas — atualizado Semana 5
+// PATCH /sessoes/:id/concluir agora gera Magic Link automaticamente se paciente tem e-mail
+
 import { Router } from "express";
+import { createHash, randomUUID } from "crypto";
+import { Redis } from "@upstash/redis";
 import { supabase } from "../lib/supabase.js";
 import { authenticateToken } from "../lib/auth.js";
+import { enviarMagicLink } from "../lib/mailer.js";
 
 const router = Router();
 
-// POST /sessoes
-// Cria uma nova sessão em andamento vinculada a um prontuário
+const redis = new Redis({
+  url: process.env.UPSTASH_REDIS_REST_URL,
+  token: process.env.UPSTASH_REDIS_REST_TOKEN,
+});
+
+const TTL_SEGUNDOS = 72 * 60 * 60;
+
+function hashToken(token) {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+// ─── POST /sessoes ───────────────────────────────────────────────────────────
+// Cria ou retoma sessão em_andamento (idempotente)
+
 router.post("/", authenticateToken, async (req, res) => {
+  const { paciente_id } = req.body;
+  const operador_id = req.user.id;
+
+  if (!paciente_id) {
+    return res.status(400).json({ error: "paciente_id obrigatório" });
+  }
+
   try {
-    const { paciente_id } = req.body;
-
-    if (!paciente_id) {
-      return res.status(400).json({ error: "paciente_id é obrigatório." });
-    }
-
-    // Verificar se já existe sessão em andamento para este paciente
+    // Verificar se já existe sessão em_andamento para este paciente
     const { data: existente } = await supabase
       .from("sessoes")
-      .select("id")
+      .select("*")
       .eq("paciente_id", paciente_id)
       .eq("status", "em_andamento")
       .maybeSingle();
 
     if (existente) {
-      return res.status(200).json({ id: existente.id, resumida: true });
+      return res.json({ sessao: existente, retomada: true });
     }
 
-    // Buscar prontuário mais recente do paciente
-    const { data: prontuarios } = await supabase
+    // Buscar prontuário mais recente
+    const { data: prontuario } = await supabase
       .from("prontuarios")
       .select("id")
       .eq("paciente_id", paciente_id)
       .order("created_at", { ascending: false })
-      .limit(1);
+      .limit(1)
+      .maybeSingle();
 
-    const prontuario_id = prontuarios?.[0]?.id ?? null;
-
-    const { data, error } = await supabase
+    const { data: sessao, error } = await supabase
       .from("sessoes")
       .insert({
-        prontuario_id,
         paciente_id,
-        operador_id: req.user.id,
+        prontuario_id: prontuario?.id ?? null,
+        operador_id,
         status: "em_andamento",
       })
       .select()
       .single();
 
-    if (error) throw error;
+    if (error) {
+      console.error("[sessoes] Erro ao criar:", error.message);
+      return res.status(500).json({ error: "Erro ao criar sessão" });
+    }
 
-    return res.status(201).json(data);
+    res.status(201).json({ sessao, retomada: false });
   } catch (err) {
-    console.error("[POST /sessoes]", err);
-    return res.status(500).json({ error: err.message || "Erro interno." });
+    console.error("[sessoes] Erro:", err.message);
+    res.status(500).json({ error: "Erro interno" });
   }
 });
 
-// GET /sessoes/prontuario/:prontuario_id
-// Lista todas as sessões de um prontuário
-router.get(
-  "/prontuario/:prontuario_id",
-  authenticateToken,
-  async (req, res) => {
-    try {
-      const { prontuario_id } = req.params;
+// ─── GET /sessoes/prontuario/:id ─────────────────────────────────────────────
 
-      const { data, error } = await supabase
-        .from("sessoes")
-        .select(
-          `
-        id, status, data_atendimento,
-        procedimentos, observacoes, valor_cobrado,
-        operador_id
-      `,
-        )
-        .eq("prontuario_id", prontuario_id)
-        .order("data_atendimento", { ascending: false });
+router.get("/prontuario/:id", authenticateToken, async (req, res) => {
+  const { id } = req.params;
 
-      if (error) throw error;
-
-      return res.json(data);
-    } catch (err) {
-      console.error("[GET /sessoes/prontuario]", err);
-      return res.status(500).json({ error: err.message || "Erro interno." });
-    }
-  },
-);
-
-// PATCH /sessoes/:id
-// Atualiza procedimentos, observações e valor da sessão em andamento
-router.patch("/:id", authenticateToken, async (req, res) => {
   try {
-    const { id } = req.params;
-    const { procedimentos, observacoes, valor_cobrado } = req.body;
-
-    const { data: sessao, error: findErr } = await supabase
+    const { data: sessoes, error } = await supabase
       .from("sessoes")
-      .select("id, status")
-      .eq("id", id)
-      .single();
+      .select("*")
+      .eq("prontuario_id", id)
+      .order("data_atendimento", { ascending: false });
 
-    if (findErr || !sessao) {
-      return res.status(404).json({ error: "Sessão não encontrada." });
-    }
+    if (error) return res.status(500).json({ error: error.message });
 
-    if (sessao.status !== "em_andamento") {
-      return res
-        .status(400)
-        .json({ error: "Apenas sessões em andamento podem ser editadas." });
-    }
+    res.json({ sessoes: sessoes ?? [] });
+  } catch (err) {
+    console.error("[sessoes] Erro ao buscar:", err.message);
+    res.status(500).json({ error: "Erro interno" });
+  }
+});
 
+// ─── PATCH /sessoes/:id ──────────────────────────────────────────────────────
+// Atualiza procedimentos e valor
+
+router.patch("/:id", authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  const { procedimentos, observacoes, valor_cobrado } = req.body;
+
+  try {
     const { data, error } = await supabase
       .from("sessoes")
       .update({ procedimentos, observacoes, valor_cobrado })
@@ -117,67 +114,96 @@ router.patch("/:id", authenticateToken, async (req, res) => {
       .select()
       .single();
 
-    if (error) throw error;
+    if (error) return res.status(500).json({ error: error.message });
 
-    return res.json(data);
+    res.json({ sessao: data });
   } catch (err) {
-    console.error("[PATCH /sessoes]", err);
-    return res.status(500).json({ error: err.message || "Erro interno." });
+    console.error("[sessoes] Erro ao atualizar:", err.message);
+    res.status(500).json({ error: "Erro interno" });
   }
 });
 
-// PATCH /sessoes/:id/concluir
-// Conclui a sessão — ponto de integração futura com Magic Link e alertas
-router.patch("/:id/concluir", authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
+// ─── PATCH /sessoes/:id/concluir ─────────────────────────────────────────────
+// Conclui sessão + gera Magic Link automaticamente se paciente tem e-mail
 
-    const { data: sessao, error: findErr } = await supabase
+router.patch("/:id/concluir", authenticateToken, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    // Buscar sessão
+    const { data: sessao, error: errSessao } = await supabase
       .from("sessoes")
-      .select("id, status, prontuario_id, paciente_id")
+      .select("id, paciente_id, status")
       .eq("id", id)
       .single();
 
-    if (findErr || !sessao) {
-      return res.status(404).json({ error: "Sessão não encontrada." });
+    if (errSessao || !sessao) {
+      return res.status(404).json({ error: "Sessão não encontrada" });
     }
 
-    if (sessao.status !== "em_andamento") {
-      return res
-        .status(400)
-        .json({ error: "Sessão já foi concluída ou cancelada." });
+    if (sessao.status === "concluida") {
+      return res.status(409).json({ error: "Sessão já concluída" });
     }
 
-    // Buscar dados do prontuário para retornar risco IWGDF
-    const { data: prontuario } = await supabase
-      .from("prontuarios")
-      .select("risco_iwgdf, proxima_consulta, diagnostico, conduta")
-      .eq("id", sessao.prontuario_id)
-      .single();
-
-    const { data, error } = await supabase
+    // Concluir sessão
+    const { data: sessaoAtualizada, error: errUpdate } = await supabase
       .from("sessoes")
       .update({ status: "concluida" })
       .eq("id", id)
       .select()
       .single();
 
-    if (error) throw error;
+    if (errUpdate) {
+      return res.status(500).json({ error: errUpdate.message });
+    }
 
-    // TODO Semana 5: gerar Magic Link + agendar alerta IWGDF
+    // Gerar Magic Link se paciente tem e-mail
+    let magicLinkEnviado = false;
+    let emailDestinatario = null;
 
-    return res.json({
-      sessao: data,
-      prontuario: {
-        risco_iwgdf: prontuario?.risco_iwgdf ?? null,
-        proxima_consulta: prontuario?.proxima_consulta ?? null,
-        diagnostico: prontuario?.diagnostico ?? null,
-        conduta: prontuario?.conduta ?? null,
-      },
+    try {
+      const { data: paciente } = await supabase
+        .from("pacientes")
+        .select("nome, email, estabelecimento_id")
+        .eq("id", sessao.paciente_id)
+        .single();
+
+      if (paciente?.email) {
+        const token = randomUUID();
+        const tokenHash = hashToken(token);
+        const expiresAt = new Date(
+          Date.now() + TTL_SEGUNDOS * 1000,
+        ).toISOString();
+
+        await redis.set(`ml:${tokenHash}`, sessao.paciente_id, {
+          ex: TTL_SEGUNDOS,
+        });
+
+        await supabase.from("magic_links").insert({
+          paciente_id: sessao.paciente_id,
+          token_hash: tokenHash,
+          expires_at: expiresAt,
+        });
+
+        await enviarMagicLink(paciente.email, paciente.nome, token);
+
+        magicLinkEnviado = true;
+        emailDestinatario = paciente.email;
+        console.log(`[sessoes] Magic Link enviado para ${paciente.email}`);
+      }
+    } catch (errMl) {
+      // Não bloquear a conclusão da sessão se o Magic Link falhar
+      console.error("[sessoes] Erro ao gerar Magic Link:", errMl.message);
+    }
+
+    res.json({
+      sessao: sessaoAtualizada,
+      magic_link_enviado: magicLinkEnviado,
+      email_destinatario: emailDestinatario,
     });
   } catch (err) {
-    console.error("[PATCH /sessoes/concluir]", err);
-    return res.status(500).json({ error: err.message || "Erro interno." });
+    console.error("[sessoes] Erro ao concluir:", err.message);
+    res.status(500).json({ error: "Erro interno" });
   }
 });
 

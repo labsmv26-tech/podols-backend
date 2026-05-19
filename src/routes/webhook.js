@@ -1,59 +1,103 @@
+// src/routes/webhook.js
+// Webhook AsaaS — GET + POST no mesmo endpoint (lição 24)
+// GET: validação ao cadastrar o webhook no painel AsaaS
+// POST: processa eventos de pagamento
+
 import { Router } from "express";
 import { supabase } from "../lib/supabase.js";
-import { sendEmail } from "../lib/email.js";
+import { enviarBoasVindasPrestador } from "../lib/mailer.js";
 
 const router = Router();
 
-// AsaaS envia GET ao cadastrar o webhook — responder 200
-router.get("/asaas", (_req, res) => {
-  res.sendStatus(200);
+// ─── GET /webhook/asaas ──────────────────────────────────────────────────────
+// AsaaS faz GET ao cadastrar o webhook para validar o endpoint
+router.get("/asaas", (req, res) => {
+  res.status(200).json({ ok: true });
 });
 
+// ─── POST /webhook/asaas ─────────────────────────────────────────────────────
 router.post("/asaas", async (req, res) => {
+  // Responder 200 imediatamente para evitar timeout do AsaaS
+  // (AsaaS pausa webhook após 15 falhas consecutivas — lição 25)
+  res.status(200).json({ received: true });
+
   const { event, payment } = req.body;
+
+  if (!payment?.customer) {
+    console.warn("[webhook] Payload sem customer:", JSON.stringify(req.body));
+    return;
+  }
+
+  const asaasCustomerId = payment.customer;
 
   try {
     if (event === "PAYMENT_CONFIRMED" || event === "PAYMENT_RECEIVED") {
-      // Localiza a clínica pelo customer_id do AsaaS
-      const { data: clinica } = await supabase
+      // Ativar clínica por 30 dias
+      const expiresAt = new Date();
+      expiresAt.setDate(expiresAt.getDate() + 30);
+
+      const { data: estabelecimento, error } = await supabase
         .from("estabelecimentos")
+        .update({
+          ativo: true,
+          access_expires_at: expiresAt.toISOString(),
+        })
+        .eq("asaas_customer_id", asaasCustomerId)
         .select("id, nome")
-        .eq("asaas_customer_id", payment.customer)
         .single();
 
-      if (!clinica) {
-        console.warn("Webhook AsaaS: clínica não encontrada", payment.customer);
-        return res.sendStatus(200); // sempre 200 para não pausar webhook
+      if (error) {
+        console.error("[webhook] Erro ao ativar clínica:", error.message);
+        return;
       }
 
-      const expires = new Date();
-      expires.setDate(expires.getDate() + 30);
+      console.log(`[webhook] Clínica ativada: ${estabelecimento?.nome}`);
 
-      await supabase
-        .from("estabelecimentos")
-        .update({ ativo: true, access_expires_at: expires.toISOString() })
-        .eq("id", clinica.id);
+      // Buscar e-mail do prestador para boas-vindas
+      try {
+        const { data: profile } = await supabase
+          .from("profiles")
+          .select("id, nome, auth_users:id(email)")
+          .eq("estabelecimento_id", estabelecimento.id)
+          .eq("role", "prestador")
+          .single();
 
-      // E-mail de boas-vindas
-      await sendEmail({
-        to: payment.billingEmail ?? "",
-        subject: "Bem-vindo ao Podols!",
-        html: `<p>Olá! Sua clínica <strong>${clinica.nome}</strong> foi ativada com sucesso.</p>
-               <p>Acesse: <a href="https://www.podols.com.br/auth">www.podols.com.br/auth</a></p>`,
-      });
+        // Buscar e-mail via auth.users usando service role
+        const { data: authUser } = await supabase.auth.admin.getUserById(
+          profile?.id,
+        );
+
+        if (authUser?.user?.email) {
+          await enviarBoasVindasPrestador(
+            authUser.user.email,
+            estabelecimento.nome,
+          );
+        }
+      } catch (errEmail) {
+        console.error(
+          "[webhook] Erro ao enviar boas-vindas:",
+          errEmail.message,
+        );
+      }
     }
 
     if (event === "PAYMENT_OVERDUE") {
-      await supabase
+      const { error } = await supabase
         .from("estabelecimentos")
         .update({ ativo: false })
-        .eq("asaas_customer_id", payment.customer);
-    }
+        .eq("asaas_customer_id", asaasCustomerId);
 
-    res.sendStatus(200);
+      if (error) {
+        console.error("[webhook] Erro ao desativar clínica:", error.message);
+        return;
+      }
+
+      console.log(
+        `[webhook] Clínica desativada por inadimplência: ${asaasCustomerId}`,
+      );
+    }
   } catch (err) {
-    console.error("Webhook AsaaS error:", err);
-    res.sendStatus(200); // sempre 200 — evitar pausa do webhook após 15 falhas
+    console.error("[webhook] Erro geral:", err.message);
   }
 });
 
