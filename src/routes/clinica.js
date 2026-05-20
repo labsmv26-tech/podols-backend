@@ -1,7 +1,6 @@
 // src/routes/clinica.js
 // Cadastro self-service da clínica + integração AsaaS
 // POST /clinica/gerar-link — cria customer + cobrança no AsaaS
-
 import { Router } from "express";
 import { supabase } from "../lib/supabase.js";
 
@@ -15,53 +14,53 @@ const ASAAS_HEADERS = {
 
 const PLANOS = {
   basico: { nome: "Podols Básico", valor: 49.0 },
+  basico_anual: { nome: "Podols Básico Anual", valor: 490.0 },
   rede: { nome: "Podols Rede", valor: 129.0 },
   bandeira: { nome: "Podols Bandeira", valor: 299.0 },
 };
 
 // ─── POST /clinica/gerar-link ─────────────────────────────────────────────────
-// Recebe: { estabelecimento_id, email, nome, cpfCnpj, plano }
-// Cria customer + cobrança no AsaaS, salva payment_url
-
+// Recebe: { estabelecimento_id, email, nome, plano, cpfCnpj? }
+// cpfCnpj é opcional — AsaaS aceita customer sem documento
 router.post("/gerar-link", async (req, res) => {
   const {
     estabelecimento_id,
     email,
     nome,
-    cpfCnpj,
     plano = "basico",
+    cpfCnpj, // opcional
   } = req.body;
 
-  if (!estabelecimento_id || !email || !nome || !cpfCnpj) {
-    return res
-      .status(400)
-      .json({
-        error: "Campos obrigatórios: estabelecimento_id, email, nome, cpfCnpj",
-      });
+  if (!estabelecimento_id || !email || !nome) {
+    return res.status(400).json({
+      error: "Campos obrigatórios: estabelecimento_id, email, nome",
+    });
   }
 
   const planoInfo = PLANOS[plano];
   if (!planoInfo) {
-    return res
-      .status(400)
-      .json({ error: "Plano inválido. Use: basico, rede ou bandeira" });
+    return res.status(400).json({
+      error: `Plano inválido. Use: ${Object.keys(PLANOS).join(", ")}`,
+    });
   }
 
   try {
     // 1. Criar customer no AsaaS
+    const customerBody = { name: nome, email };
+    if (cpfCnpj) customerBody.cpfCnpj = cpfCnpj; // só envia se vier
+
     const resCustomer = await fetch(`${ASAAS_BASE}/customers`, {
       method: "POST",
       headers: ASAAS_HEADERS,
-      body: JSON.stringify({ name: nome, email, cpfCnpj }),
+      body: JSON.stringify(customerBody),
     });
-
     const customer = await resCustomer.json();
 
     if (!customer.id) {
       console.error("[clinica] Erro ao criar customer AsaaS:", customer);
-      return res
-        .status(502)
-        .json({ error: "Erro ao criar cliente no sistema de pagamento" });
+      return res.status(502).json({
+        error: "Erro ao criar cliente no sistema de pagamento",
+      });
     }
 
     // 2. Criar cobrança (link de pagamento)
@@ -73,14 +72,13 @@ router.post("/gerar-link", async (req, res) => {
       headers: ASAAS_HEADERS,
       body: JSON.stringify({
         customer: customer.id,
-        billingType: "UNDEFINED", // Pix + Cartão
+        billingType: "UNDEFINED", // Pix + Cartão + Boleto
         value: planoInfo.valor,
         dueDate: vencimento.toISOString().split("T")[0],
         description: `${planoInfo.nome} — Podols`,
         externalReference: estabelecimento_id,
       }),
     });
-
     const cobranca = await resCobranca.json();
 
     if (!cobranca.invoiceUrl) {
