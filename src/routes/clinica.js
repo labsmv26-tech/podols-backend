@@ -20,15 +20,15 @@ const PLANOS = {
 };
 
 // ─── POST /clinica/gerar-link ─────────────────────────────────────────────────
-// Recebe: { estabelecimento_id, email, nome, plano, cpfCnpj? }
-// cpfCnpj é opcional — AsaaS aceita customer sem documento
+// Recebe: { estabelecimento_id, email, nome, plano, cpfCnpj }
+// cpfCnpj obrigatório — AsaaS exige para criar cobrança (lição 96)
 router.post("/gerar-link", async (req, res) => {
   const {
     estabelecimento_id,
     email,
     nome,
     plano = "basico",
-    cpfCnpj, // opcional
+    cpfCnpj,
   } = req.body;
 
   if (!estabelecimento_id || !email || !nome) {
@@ -47,7 +47,7 @@ router.post("/gerar-link", async (req, res) => {
   try {
     // 1. Criar customer no AsaaS
     const customerBody = { name: nome, email };
-    if (cpfCnpj) customerBody.cpfCnpj = cpfCnpj; // só envia se vier
+    if (cpfCnpj) customerBody.cpfCnpj = cpfCnpj;
 
     const resCustomer = await fetch(`${ASAAS_BASE}/customers`, {
       method: "POST",
@@ -63,16 +63,17 @@ router.post("/gerar-link", async (req, res) => {
       });
     }
 
-    // 2. Criar cobrança (link de pagamento)
+    // 2. Criar cobrança PIX
+    // PIX permite simulação no painel AsaaS e não exige dados bancários do cliente
     const vencimento = new Date();
-    vencimento.setDate(vencimento.getDate() + 3); // 3 dias para pagar
+    vencimento.setDate(vencimento.getDate() + 15); // trial 14 dias + 1 dia margem (lição 98)
 
     const resCobranca = await fetch(`${ASAAS_BASE}/payments`, {
       method: "POST",
       headers: ASAAS_HEADERS,
       body: JSON.stringify({
         customer: customer.id,
-        billingType: "UNDEFINED", // Pix + Cartão + Boleto
+        billingType: "PIX",
         value: planoInfo.valor,
         dueDate: vencimento.toISOString().split("T")[0],
         description: `${planoInfo.nome} — Podols`,
@@ -101,7 +102,7 @@ router.post("/gerar-link", async (req, res) => {
     }
 
     console.log(
-      `[clinica] Link gerado para ${estabelecimento_id}: ${cobranca.invoiceUrl}`,
+      `[clinica] Link PIX gerado para ${estabelecimento_id}: ${cobranca.invoiceUrl}`,
     );
 
     res.json({
