@@ -54,25 +54,42 @@ router.post("/asaas", async (req, res) => {
       console.log(`[webhook] Clínica ativada: ${estabelecimento?.nome}`);
 
       // Buscar e-mail do prestador para boas-vindas
+      // getUserById exige UUID válido de auth.users — buscar profile.id separadamente
       try {
-        const { data: profile } = await supabase
+        const { data: profile, error: errProfile } = await supabase
           .from("profiles")
-          .select("id, nome, auth_users:id(email)")
+          .select("id, nome")
           .eq("estabelecimento_id", estabelecimento.id)
           .eq("role", "prestador")
           .single();
 
-        // Buscar e-mail via auth.users usando service role
-        const { data: authUser } = await supabase.auth.admin.getUserById(
-          profile?.id,
+        if (errProfile || !profile?.id) {
+          console.warn(
+            "[webhook] Profile prestador não encontrado para:",
+            estabelecimento.id,
+          );
+          return;
+        }
+
+        const { data: authData, error: errAuth } =
+          await supabase.auth.admin.getUserById(profile.id);
+
+        if (errAuth || !authData?.user?.email) {
+          console.warn(
+            "[webhook] E-mail não encontrado para profile:",
+            profile.id,
+          );
+          return;
+        }
+
+        await enviarBoasVindasPrestador(
+          authData.user.email,
+          estabelecimento.nome,
         );
 
-        if (authUser?.user?.email) {
-          await enviarBoasVindasPrestador(
-            authUser.user.email,
-            estabelecimento.nome,
-          );
-        }
+        console.log(
+          `[webhook] Boas-vindas enviado para: ${authData.user.email}`,
+        );
       } catch (errEmail) {
         console.error(
           "[webhook] Erro ao enviar boas-vindas:",
