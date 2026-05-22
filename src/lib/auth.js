@@ -16,6 +16,19 @@ export async function authenticateToken(req, res, next) {
     return res.status(401).json({ error: "Token inválido ou expirado" });
   }
 
-  req.user = data.user;
+  // Buscar role e estabelecimento_id do profile (lição 47)
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("role, estabelecimento_id, nome")
+    .eq("id", data.user.id)
+    .single();
+
+  req.user = {
+    ...data.user,
+    role: profile?.role ?? null,
+    estabelecimento_id: profile?.estabelecimento_id ?? null,
+    nome: profile?.nome ?? null,
+  };
+
   next();
 }
