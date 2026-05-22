@@ -102,14 +102,35 @@ router.get("/prontuario/:id", authenticateToken, async (req, res) => {
 // ─── PATCH /sessoes/:id ──────────────────────────────────────────────────────
 // Atualiza procedimentos e valor
 
+// ─── Substituir apenas o handler PATCH /:id em src/routes/sessoes.js ─────────
+// O restante do arquivo permanece idêntico
+
+// ─── PATCH /sessoes/:id ──────────────────────────────────────────────────────
+// Atualiza procedimentos, valor e forma de pagamento
+
 router.patch("/:id", authenticateToken, async (req, res) => {
   const { id } = req.params;
-  const { procedimentos, observacoes, valor_cobrado } = req.body;
+  const { procedimentos, observacoes, valor_cobrado, forma_pagamento } =
+    req.body;
+
+  const formasPermitidas = ["dinheiro", "cartao", "pix"];
+  if (forma_pagamento && !formasPermitidas.includes(forma_pagamento)) {
+    return res.status(400).json({
+      error: `forma_pagamento inválida. Permitidas: ${formasPermitidas.join(", ")}`,
+    });
+  }
 
   try {
+    const payload = {};
+    if (procedimentos !== undefined) payload.procedimentos = procedimentos;
+    if (observacoes !== undefined) payload.observacoes = observacoes;
+    if (valor_cobrado !== undefined) payload.valor_cobrado = valor_cobrado;
+    if (forma_pagamento !== undefined)
+      payload.forma_pagamento = forma_pagamento;
+
     const { data, error } = await supabase
       .from("sessoes")
-      .update({ procedimentos, observacoes, valor_cobrado })
+      .update(payload)
       .eq("id", id)
       .select()
       .single();
