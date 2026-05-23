@@ -16,6 +16,7 @@ import imagensRouter from "./routes/imagens.js";
 import alertasRouter from "./routes/alertas.js";
 import consentimentosRouter from "./routes/consentimentos.js";
 import agendamentosRouter from "./routes/agendamentos.js";
+import equipeRouter from "./routes/equipe.js";
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -50,6 +51,7 @@ app.use("/sessoes", sessoesRouter);
 app.use("/imagens", imagensRouter);
 app.use("/consentimentos", consentimentosRouter);
 app.use("/agendamentos", agendamentosRouter);
+app.use("/equipe", equipeRouter);
 
 // ─── INICIAR ─────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {

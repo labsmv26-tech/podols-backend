@@ -224,4 +224,65 @@ export async function enviarBoasVindasPrestador(email, nomeClinica) {
   });
 }
 
+// ─── ADICIONAR ao src/lib/mailer.js ─────────────────────────
+// Colar antes do `export default transporter`
+
+/**
+ * Convite para membro da equipe (podóloga ou secretária)
+ * @param {Object} params
+ * @param {string} params.email
+ * @param {string} params.nome
+ * @param {string} params.role        — 'podologa' | 'recepcao'
+ * @param {string} params.nomeClinica
+ * @param {string} params.nomeDono
+ * @param {string} params.magicLink   — link gerado pelo Supabase Auth admin
+ */
+export async function enviarConviteEquipe({
+  email,
+  nome,
+  role,
+  nomeClinica,
+  nomeDono,
+  magicLink,
+}) {
+  const labelRole = role === "podologa" ? "Podóloga" : "Recepcionista";
+
+  const corpo = `
+    <h2 style="color:#111827;margin:0 0 8px;">Olá, ${nome}!</h2>
+    <p style="color:#6b7280;margin:0 0 8px;font-size:15px;line-height:1.6;">
+      <strong>${nomeDono}</strong> convidou você para fazer parte da equipe da
+      <strong>${nomeClinica}</strong> no Podols.
+    </p>
+    <p style="color:#6b7280;margin:0 0 24px;font-size:15px;line-height:1.6;">
+      Sua função: <strong>${labelRole}</strong>
+    </p>
+    <div style="background:#f0fdf4;border-left:4px solid #1D9E75;padding:16px;
+                border-radius:4px;margin-bottom:24px;">
+      <p style="margin:0;color:#166534;font-size:14px;line-height:1.6;">
+        Clique no botão abaixo para acessar o sistema pela primeira vez.<br/>
+        <strong>O link é válido por 24 horas.</strong>
+      </p>
+    </div>
+    <a href="${magicLink}"
+      style="display:inline-block;background:#1D9E75;color:#ffffff;text-decoration:none;
+             padding:14px 28px;border-radius:8px;font-size:15px;font-weight:bold;">
+      Acessar o Podols →
+    </a>
+    <p style="color:#9ca3af;font-size:12px;margin:24px 0 0;">
+      Se o botão não funcionar, copie e cole este link no seu navegador:<br/>
+      <a href="${magicLink}" style="color:#1D9E75;word-break:break-all;">${magicLink}</a>
+    </p>
+    <p style="color:#d1d5db;font-size:11px;margin:16px 0 0;">
+      Este convite foi enviado para ${email}. Se você não esperava receber este
+      e-mail, ignore-o com segurança.
+    </p>`;
+
+  await transporter.sendMail({
+    from: `"Podols" <${process.env.SMTP_USER}>`,
+    to: email,
+    subject: `Você foi convidada para ${nomeClinica} — Podols`,
+    html: htmlBase(`Convite — ${nomeClinica}`, corpo),
+  });
+}
+
 export default transporter;
