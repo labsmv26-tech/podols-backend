@@ -181,50 +181,6 @@ router.post("/", authenticateToken, async (req, res) => {
   }
 });
 
-// ─── GET /consentimentos/:paciente_id ────────────────────────────────────────
-// Retorna status dos consentimentos do paciente (para exibir no prontuário)
-
-router.get("/:paciente_id", authenticateToken, async (req, res) => {
-  const { paciente_id } = req.params;
-
-  try {
-    const { data, error } = await supabase
-      .from("consentimentos")
-      .select("id, tipo, assinado_em, versao, revogado_em")
-      .eq("paciente_id", paciente_id)
-      .order("assinado_em", { ascending: false });
-
-    if (error) return res.status(500).json({ error: error.message });
-
-    // Resumo: tcle e imagem estão assinados e na versão atual?
-    const resumo = {
-      tcle: {
-        assinado: false,
-        versao_atual: TERMOS.tcle.versao,
-        assinado_em: null,
-      },
-      imagem: {
-        assinado: false,
-        versao_atual: TERMOS.imagem.versao,
-        assinado_em: null,
-      },
-    };
-
-    for (const c of data ?? []) {
-      if (!c.revogado_em && resumo[c.tipo]) {
-        resumo[c.tipo].assinado = c.versao === TERMOS[c.tipo].versao;
-        resumo[c.tipo].assinado_em = c.assinado_em;
-        resumo[c.tipo].versao_registrada = c.versao;
-      }
-    }
-
-    res.json({ consentimentos: data ?? [], resumo });
-  } catch (err) {
-    console.error("[consentimentos] Erro ao buscar:", err.message);
-    res.status(500).json({ error: "Erro interno" });
-  }
-});
-
 // ─── GET /consentimentos/termos/:tipo ────────────────────────────────────────
 // Retorna o texto do termo para exibição no modal (rota pública)
 
@@ -380,6 +336,50 @@ router.get("/whatsapp/:token", async (req, res) => {
   }
 
   return res.json(data);
+});
+
+// ─── GET /consentimentos/:paciente_id ────────────────────────────────────────
+// Retorna status dos consentimentos do paciente (para exibir no prontuário)
+
+router.get("/:paciente_id", authenticateToken, async (req, res) => {
+  const { paciente_id } = req.params;
+
+  try {
+    const { data, error } = await supabase
+      .from("consentimentos")
+      .select("id, tipo, assinado_em, versao, revogado_em")
+      .eq("paciente_id", paciente_id)
+      .order("assinado_em", { ascending: false });
+
+    if (error) return res.status(500).json({ error: error.message });
+
+    // Resumo: tcle e imagem estão assinados e na versão atual?
+    const resumo = {
+      tcle: {
+        assinado: false,
+        versao_atual: TERMOS.tcle.versao,
+        assinado_em: null,
+      },
+      imagem: {
+        assinado: false,
+        versao_atual: TERMOS.imagem.versao,
+        assinado_em: null,
+      },
+    };
+
+    for (const c of data ?? []) {
+      if (!c.revogado_em && resumo[c.tipo]) {
+        resumo[c.tipo].assinado = c.versao === TERMOS[c.tipo].versao;
+        resumo[c.tipo].assinado_em = c.assinado_em;
+        resumo[c.tipo].versao_registrada = c.versao;
+      }
+    }
+
+    res.json({ consentimentos: data ?? [], resumo });
+  } catch (err) {
+    console.error("[consentimentos] Erro ao buscar:", err.message);
+    res.status(500).json({ error: "Erro interno" });
+  }
 });
 
 export default router;
