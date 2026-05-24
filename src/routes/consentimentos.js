@@ -263,7 +263,10 @@ router.post("/whatsapp/enviar", authenticateToken, async (req, res) => {
           "Content-Type": "application/json",
           apikey: process.env.EVOLUTION_API_KEY,
         },
-        body: JSON.stringify({ number: numero, text: mensagem }),
+        body: JSON.stringify({
+          number: numero,
+          textMessage: { text: mensagem },
+        }),
       },
     );
 
