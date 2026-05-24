@@ -203,7 +203,7 @@ router.post("/whatsapp/enviar", authenticateToken, async (req, res) => {
     return res.status(400).json({ error: "Campos obrigatórios ausentes." });
   }
 
-  // Buscar estabelecimento_id do operador autenticado
+  // 1. Buscar estabelecimento_id do operador
   const { data: profile, error: errProfile } = await supabase
     .from("profiles")
     .select("estabelecimento_id")
@@ -215,19 +215,45 @@ router.post("/whatsapp/enviar", authenticateToken, async (req, res) => {
       .status(403)
       .json({ error: "Perfil do operador não encontrado." });
   }
-  const link = `${process.env.APP_URL}/consentimento/${consentimento.token}`;
 
+  const estabelecimento_id = profile.estabelecimento_id;
+  const telefoneLimpo = telefone.replace(/\D/g, "");
+  const agora = new Date().toISOString();
+
+  // 2. Criar registro na tabela consentimentos
+  const { data: consentimento, error: insertError } = await supabase
+    .from("consentimentos")
+    .insert({
+      sessao_id: sessao_id ?? null,
+      paciente_id,
+      estabelecimento_id,
+      telefone: telefoneLimpo,
+      tipo: "imagem",
+      versao: TERMOS.imagem.versao,
+      texto_termo: TERMOS.imagem.texto,
+      hash_integridade: gerarHashIntegridade("imagem", agora),
+      status: "pendente",
+      expira_em: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+    })
+    .select("token")
+    .single();
+
+  if (insertError) {
+    console.error("[consentimentos] Erro ao criar:", insertError.message);
+    return res.status(500).json({ error: "Erro ao criar consentimento." });
+  }
+
+  // 3. Montar link e mensagem
+  const link = `${process.env.APP_URL}/consentimento/${consentimento.token}`;
   const numero = telefoneLimpo.startsWith("55")
     ? telefoneLimpo
     : `55${telefoneLimpo}`;
-  const estabelecimento_id = profile.estabelecimento_id;
-  const telefoneLimpo = telefone.replace(/\D/g, "");
-
   const mensagem =
     `Olá! Sua podóloga solicita sua autorização para registro fotográfico do atendimento de hoje.\n\n` +
     `Acesse o link, leia o termo e confirme:\n${link}\n\n` +
     `O link expira em 24 horas.`;
 
+  // 4. Enviar via Evolution API
   try {
     const evolucaoRes = await fetch(
       `${process.env.EVOLUTION_API_URL}/message/sendText/podols`,
@@ -259,7 +285,6 @@ router.post("/whatsapp/enviar", authenticateToken, async (req, res) => {
 
   return res.json({ ok: true, token: consentimento.token });
 });
-
 // ─── POST /consentimentos/whatsapp/:token/aceitar ────────────────────────────
 // Rota pública — paciente confirma aceite pelo link recebido no WhatsApp
 
