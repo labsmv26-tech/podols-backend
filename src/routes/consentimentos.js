@@ -215,7 +215,11 @@ router.post("/whatsapp/enviar", authenticateToken, async (req, res) => {
       .status(403)
       .json({ error: "Perfil do operador não encontrado." });
   }
+  const link = `${process.env.APP_URL}/consentimento/${consentimento.token}`;
 
+  const numero = telefoneLimpo.startsWith("55")
+    ? telefoneLimpo
+    : `55${telefoneLimpo}`;
   const estabelecimento_id = profile.estabelecimento_id;
   const telefoneLimpo = telefone.replace(/\D/g, "");
 
