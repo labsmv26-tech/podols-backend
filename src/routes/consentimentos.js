@@ -195,45 +195,29 @@ router.get("/termos/:tipo", (req, res) => {
 // ─── POST /consentimentos/whatsapp/enviar ────────────────────────────────────
 // Gera token único e envia link de consentimento via WhatsApp
 // Body: { sessao_id, paciente_id, estabelecimento_id, telefone }
-
 router.post("/whatsapp/enviar", authenticateToken, async (req, res) => {
-  const { sessao_id, paciente_id, estabelecimento_id, telefone } = req.body;
+  const { sessao_id, paciente_id, telefone } = req.body;
+  const operador_id = req.user.id;
 
-  if (!sessao_id || !paciente_id || !estabelecimento_id || !telefone) {
+  if (!paciente_id || !telefone) {
     return res.status(400).json({ error: "Campos obrigatórios ausentes." });
   }
 
-  const telefoneLimpo = telefone.replace(/\D/g, "");
-
-  const { data: consentimento, error: insertError } = await supabase
-    .from("consentimentos")
-    .insert({
-      sessao_id,
-      paciente_id,
-      estabelecimento_id,
-      telefone: telefoneLimpo,
-      tipo: "imagem",
-      versao: TERMOS.imagem.versao,
-      texto_termo: TERMOS.imagem.texto,
-      hash_integridade: gerarHashIntegridade(
-        "imagem",
-        new Date().toISOString(),
-      ),
-      status: "pendente",
-      expira_em: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-    })
-    .select("token")
+  // Buscar estabelecimento_id do operador autenticado
+  const { data: profile, error: errProfile } = await supabase
+    .from("profiles")
+    .select("estabelecimento_id")
+    .eq("id", operador_id)
     .single();
 
-  if (insertError) {
-    console.error("[consentimentos] Erro ao criar:", insertError.message);
-    return res.status(500).json({ error: "Erro ao criar consentimento." });
+  if (errProfile || !profile?.estabelecimento_id) {
+    return res
+      .status(403)
+      .json({ error: "Perfil do operador não encontrado." });
   }
 
-  const link = `${process.env.APP_URL}/consentimento/${consentimento.token}`;
-  const numero = telefoneLimpo.startsWith("55")
-    ? telefoneLimpo
-    : `55${telefoneLimpo}`;
+  const estabelecimento_id = profile.estabelecimento_id;
+  const telefoneLimpo = telefone.replace(/\D/g, "");
 
   const mensagem =
     `Olá! Sua podóloga solicita sua autorização para registro fotográfico do atendimento de hoje.\n\n` +
