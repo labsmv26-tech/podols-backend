@@ -6,6 +6,8 @@ import { Router } from "express";
 import { createHash } from "crypto";
 import { supabase } from "../lib/supabase.js";
 import { authenticateToken } from "../lib/auth.js";
+// Verificar se já tem — se não tiver, adicionar:
+import fetch from "node-fetch";
 
 const router = Router();
 
@@ -234,6 +236,150 @@ router.get("/termos/:tipo", (req, res) => {
   }
 
   res.json(TERMOS[tipo]);
+});
+
+// ─── POST /consentimentos/whatsapp/enviar ────────────────────────────────────
+// Gera token único e envia link de consentimento via WhatsApp
+// Body: { sessao_id, paciente_id, estabelecimento_id, telefone }
+
+router.post("/whatsapp/enviar", authenticateToken, async (req, res) => {
+  const { sessao_id, paciente_id, estabelecimento_id, telefone } = req.body;
+
+  if (!sessao_id || !paciente_id || !estabelecimento_id || !telefone) {
+    return res.status(400).json({ error: "Campos obrigatórios ausentes." });
+  }
+
+  const telefoneLimpo = telefone.replace(/\D/g, "");
+
+  const { data: consentimento, error: insertError } = await supabase
+    .from("consentimentos")
+    .insert({
+      sessao_id,
+      paciente_id,
+      estabelecimento_id,
+      telefone: telefoneLimpo,
+      tipo: "imagem",
+      versao: TERMOS.imagem.versao,
+      texto_termo: TERMOS.imagem.texto,
+      hash_integridade: gerarHashIntegridade(
+        "imagem",
+        new Date().toISOString(),
+      ),
+      status: "pendente",
+      expira_em: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+    })
+    .select("token")
+    .single();
+
+  if (insertError) {
+    console.error("[consentimentos] Erro ao criar:", insertError.message);
+    return res.status(500).json({ error: "Erro ao criar consentimento." });
+  }
+
+  const link = `${process.env.APP_URL}/consentimento/${consentimento.token}`;
+  const numero = telefoneLimpo.startsWith("55")
+    ? telefoneLimpo
+    : `55${telefoneLimpo}`;
+
+  const mensagem =
+    `Olá! Sua podóloga solicita sua autorização para registro fotográfico do atendimento de hoje.\n\n` +
+    `Acesse o link, leia o termo e confirme:\n${link}\n\n` +
+    `O link expira em 24 horas.`;
+
+  try {
+    const evolucaoRes = await fetch(
+      `${process.env.EVOLUTION_API_URL}/message/sendText/podols`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          apikey: process.env.EVOLUTION_API_KEY,
+        },
+        body: JSON.stringify({ number: numero, text: mensagem }),
+      },
+    );
+
+    if (!evolucaoRes.ok) {
+      const err = await evolucaoRes.text();
+      console.error("[consentimentos] Evolution erro:", err);
+      return res.status(502).json({ error: "Erro ao enviar WhatsApp." });
+    }
+  } catch (e) {
+    console.error("[consentimentos] Evolution exception:", e.message);
+    return res.status(502).json({ error: "Erro ao conectar Evolution API." });
+  }
+
+  return res.json({ ok: true, token: consentimento.token });
+});
+
+// ─── POST /consentimentos/whatsapp/:token/aceitar ────────────────────────────
+// Rota pública — paciente confirma aceite pelo link recebido no WhatsApp
+
+router.post("/whatsapp/:token/aceitar", async (req, res) => {
+  const { token } = req.params;
+  const ip = req.headers["x-forwarded-for"] || req.socket.remoteAddress;
+  const userAgent = req.headers["user-agent"] || "";
+
+  const { data, error } = await supabase
+    .from("consentimentos")
+    .select("id, status, expira_em")
+    .eq("token", token)
+    .single();
+
+  if (error || !data) {
+    return res.status(404).json({ error: "Termo não encontrado." });
+  }
+
+  if (data.status === "aceito") {
+    return res.json({ ok: true, mensagem: "Termo já aceito anteriormente." });
+  }
+
+  if (new Date(data.expira_em) < new Date()) {
+    return res.status(410).json({ error: "Este link expirou." });
+  }
+
+  const agora = new Date().toISOString();
+  const { error: updateError } = await supabase
+    .from("consentimentos")
+    .update({
+      status: "aceito",
+      assinado_em: agora,
+      ip,
+      aceito_user_agent: userAgent,
+    })
+    .eq("id", data.id);
+
+  if (updateError) {
+    console.error(
+      "[consentimentos] Erro ao registrar aceite:",
+      updateError.message,
+    );
+    return res.status(500).json({ error: "Erro ao registrar aceite." });
+  }
+
+  return res.json({
+    ok: true,
+    mensagem: "Consentimento registrado com sucesso.",
+  });
+});
+
+// ─── GET /consentimentos/whatsapp/:token ─────────────────────────────────────
+// Rota pública — retorna texto do termo para exibir na página de aceite
+
+router.get("/whatsapp/:token", async (req, res) => {
+  const { token } = req.params;
+
+  const { data, error } = await supabase
+    .from("consentimentos")
+    .select("texto_termo, status, expira_em, versao")
+    .eq("token", token)
+    .single();
+
+  if (error || !data) {
+    return res.status(404).json({ error: "Termo não encontrado." });
+  }
+
+  return res.json(data);
 });
 
 export default router;
