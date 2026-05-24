@@ -6,8 +6,6 @@ import { Router } from "express";
 import { createHash } from "crypto";
 import { supabase } from "../lib/supabase.js";
 import { authenticateToken } from "../lib/auth.js";
-// Verificar se já tem — se não tiver, adicionar:
-import fetch from "node-fetch";
 
 const router = Router();
 
