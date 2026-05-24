@@ -237,14 +237,20 @@ router.post("/whatsapp/enviar", authenticateToken, async (req, res) => {
       },
     );
 
+    const evolucaoBody = await evolucaoRes.text();
+    console.log("[evolution] status:", evolucaoRes.status);
+    console.log("[evolution] body:", evolucaoBody);
+
     if (!evolucaoRes.ok) {
-      const err = await evolucaoRes.text();
-      console.error("[consentimentos] Evolution erro:", err);
-      return res.status(502).json({ error: "Erro ao enviar WhatsApp." });
+      return res
+        .status(502)
+        .json({ error: "Erro ao enviar WhatsApp.", detalhe: evolucaoBody });
     }
   } catch (e) {
-    console.error("[consentimentos] Evolution exception:", e.message);
-    return res.status(502).json({ error: "Erro ao conectar Evolution API." });
+    console.error("[evolution] exception:", e.message);
+    return res
+      .status(502)
+      .json({ error: "Erro ao conectar Evolution API.", detalhe: e.message });
   }
 
   return res.json({ ok: true, token: consentimento.token });
