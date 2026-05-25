@@ -5,6 +5,7 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
+import "./jobs/lembrete-d1.js";
 
 import healthRouter from "./routes/health.js";
 import webhookRouter from "./routes/webhook.js";
