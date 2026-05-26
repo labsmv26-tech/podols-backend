@@ -288,6 +288,149 @@ router.post("/whatsapp/enviar", authenticateToken, async (req, res) => {
 
   return res.json({ ok: true, token: consentimento.token });
 });
+
+// ─── POST /consentimentos/tcle/enviar ────────────────────────────────────────
+// Gera token único e envia link de TCLE via WhatsApp ao cadastrar paciente
+// Body: { paciente_id, estabelecimento_id, telefone, nome_paciente }
+// Autenticada — chamada pelo operador logado após cadastrar o paciente
+//
+// ADICIONAR em src/routes/consentimentos.js, antes do `export default router`
+// Sugestão: inserir após a rota POST /consentimentos/whatsapp/enviar existente
+
+router.post("/tcle/enviar", authenticateToken, async (req, res) => {
+  const { paciente_id, telefone, nome_paciente } = req.body;
+  const operador_id = req.user.id;
+
+  if (!paciente_id || !telefone) {
+    return res
+      .status(400)
+      .json({ error: "paciente_id e telefone são obrigatórios." });
+  }
+
+  // 1. Buscar estabelecimento_id do operador
+  const { data: profile, error: errProfile } = await supabase
+    .from("profiles")
+    .select("estabelecimento_id")
+    .eq("id", operador_id)
+    .single();
+
+  if (errProfile || !profile?.estabelecimento_id) {
+    return res
+      .status(403)
+      .json({ error: "Perfil do operador não encontrado." });
+  }
+
+  const estabelecimento_id = profile.estabelecimento_id;
+  const telefoneLimpo = telefone.replace(/\D/g, "");
+  const agora = new Date().toISOString();
+
+  // 2. Verificar se já existe TCLE pendente ou aceito para este paciente
+  const { data: existente } = await supabase
+    .from("consentimentos")
+    .select("id, status")
+    .eq("paciente_id", paciente_id)
+    .eq("tipo", "tcle")
+    .in("status", ["pendente", "aceito"])
+    .maybeSingle();
+
+  if (existente?.status === "aceito") {
+    return res.status(409).json({
+      error: "TCLE já aceito para este paciente.",
+      status: "aceito",
+    });
+  }
+
+  if (existente?.status === "pendente") {
+    // Já enviado — apenas retorna sem duplicar
+    return res.status(409).json({
+      error: "TCLE já enviado e aguardando aceite.",
+      status: "pendente",
+    });
+  }
+
+  // 3. Criar registro na tabela consentimentos
+  const { data: consentimento, error: insertError } = await supabase
+    .from("consentimentos")
+    .insert({
+      paciente_id,
+      estabelecimento_id,
+      tipo: "tcle",
+      versao: TERMOS.tcle.versao,
+      texto_termo: TERMOS.tcle.texto,
+      hash_integridade: gerarHashIntegridade("tcle", agora),
+      status: "pendente",
+      telefone: telefoneLimpo,
+      operador_id,
+      expira_em: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(), // 30 dias
+    })
+    .select("token")
+    .single();
+
+  if (insertError) {
+    console.error("[tcle] Erro ao criar consentimento:", insertError.message);
+    return res.status(500).json({ error: "Erro ao criar TCLE." });
+  }
+
+  // 4. Montar link e mensagem
+  const link = `${process.env.APP_URL}/consentimento/tcle/${consentimento.token}`;
+  const numero = telefoneLimpo.startsWith("55")
+    ? telefoneLimpo
+    : `55${telefoneLimpo}`;
+
+  const primeiroNome = (nome_paciente ?? "").split(" ")[0] || "você";
+  const mensagem =
+    `Olá, ${primeiroNome}! Bem-vindo(a) à nossa clínica. 🌿\n\n` +
+    `Para iniciarmos seu atendimento, precisamos do seu consentimento sobre como seus dados de saúde serão tratados (LGPD).\n\n` +
+    `Acesse o link abaixo, leia o termo e confirme:\n${link}\n\n` +
+    `O link é válido por 30 dias. Qualquer dúvida, fale com nossa equipe.`;
+
+  // 5. Enviar via Evolution API
+  try {
+    const evolucaoRes = await fetch(
+      `${process.env.EVOLUTION_API_URL}/message/sendText/podols`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          apikey: process.env.EVOLUTION_API_KEY,
+        },
+        body: JSON.stringify({
+          number: numero,
+          textMessage: { text: mensagem },
+        }),
+      },
+    );
+
+    const evolucaoBody = await evolucaoRes.text();
+    console.log("[tcle/evolution] status:", evolucaoRes.status);
+    console.log("[tcle/evolution] body:", evolucaoBody);
+
+    if (!evolucaoRes.ok) {
+      // Não falha o cadastro — TCLE criado no banco, WhatsApp falhou
+      console.warn("[tcle] WhatsApp falhou mas TCLE registrado no banco.");
+      return res.status(207).json({
+        ok: false,
+        token: consentimento.token,
+        aviso: "TCLE criado mas falha ao enviar WhatsApp.",
+        detalhe: evolucaoBody,
+      });
+    }
+  } catch (e) {
+    console.error("[tcle/evolution] exception:", e.message);
+    return res.status(207).json({
+      ok: false,
+      token: consentimento.token,
+      aviso: "TCLE criado mas falha ao conectar Evolution API.",
+      detalhe: e.message,
+    });
+  }
+
+  console.log(
+    `[tcle] Enviado — paciente ${paciente_id} — tel ${telefoneLimpo}`,
+  );
+  return res.json({ ok: true, token: consentimento.token });
+});
+
 // ─── POST /consentimentos/whatsapp/:token/aceitar ────────────────────────────
 // Rota pública — paciente confirma aceite pelo link recebido no WhatsApp
 
@@ -361,19 +504,24 @@ router.get("/whatsapp/:token", async (req, res) => {
 // ─── GET /consentimentos/:paciente_id ────────────────────────────────────────
 // Retorna status dos consentimentos do paciente (para exibir no prontuário)
 
+// PATCH — src/routes/consentimentos.js
+// Substituir a rota GET /consentimentos/:paciente_id existente por esta versão
+// Mudanças:
+//   1. Adicionar "status" ao select
+//   2. Condição assinado: checar status === 'aceito' além de versão e revogado_em
+
 router.get("/:paciente_id", authenticateToken, async (req, res) => {
   const { paciente_id } = req.params;
 
   try {
     const { data, error } = await supabase
       .from("consentimentos")
-      .select("id, tipo, assinado_em, versao, revogado_em")
+      .select("id, tipo, assinado_em, versao, revogado_em, status") // ← adicionado: status
       .eq("paciente_id", paciente_id)
       .order("assinado_em", { ascending: false });
 
     if (error) return res.status(500).json({ error: error.message });
 
-    // Resumo: tcle e imagem estão assinados e na versão atual?
     const resumo = {
       tcle: {
         assinado: false,
@@ -389,9 +537,11 @@ router.get("/:paciente_id", authenticateToken, async (req, res) => {
 
     for (const c of data ?? []) {
       if (!c.revogado_em && resumo[c.tipo]) {
-        resumo[c.tipo].assinado = c.versao === TERMOS[c.tipo].versao;
+        resumo[c.tipo].assinado =
+          c.versao === TERMOS[c.tipo].versao && c.status === "aceito"; // ← corrigido
         resumo[c.tipo].assinado_em = c.assinado_em;
         resumo[c.tipo].versao_registrada = c.versao;
+        resumo[c.tipo].status = c.status; // ← expõe status para o frontend
       }
     }
 
