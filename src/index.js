@@ -6,6 +6,7 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import "./jobs/lembrete-d1.js";
+import lembretesRouter from "./routes/lembretes.js";
 
 import healthRouter from "./routes/health.js";
 import webhookRouter from "./routes/webhook.js";
@@ -53,6 +54,7 @@ app.use("/imagens", imagensRouter);
 app.use("/consentimentos", consentimentosRouter);
 app.use("/agendamentos", agendamentosRouter);
 app.use("/equipe", equipeRouter);
+app.use("/lembretes", lembretesRouter);
 
 // ─── INICIAR ─────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {

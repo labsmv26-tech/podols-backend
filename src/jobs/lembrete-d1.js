@@ -34,37 +34,37 @@ function formatarData(dataHora) {
   return `${diaSemana}, ${diaNum} às ${hora}`;
 }
 
-async function dispararLembretesD1() {
+export async function dispararLembretesD1() {
   console.log("[lembrete-d1] Iniciando verificação...");
 
-  // Janela: amanhã entre 00:00 e 23:59 (GMT-4)
+  // Amanhã em GMT-4: pegar UTC agora e subtrair 4h para saber que "dia" é em GMT-4
   const agora = new Date();
-  const amanha = new Date(agora);
-  amanha.setDate(agora.getDate() + 1);
 
-  // Início e fim do dia de amanhã em GMT-4 (offset = +4h em UTC)
+  // Offset GMT-4 em ms
+  const offsetMs = 4 * 60 * 60 * 1000;
+
+  // "Agora" em GMT-4
+  const agoraGmt4 = new Date(agora.getTime() - offsetMs);
+
+  // Amanhã em GMT-4 (só a data)
+  const amanhaGmt4 = new Date(agoraGmt4);
+  amanhaGmt4.setUTCDate(agoraGmt4.getUTCDate() + 1);
+
+  // Início: 00:00 GMT-4 = 04:00 UTC do dia amanhã
   const inicio = new Date(
     Date.UTC(
-      amanha.getUTCFullYear(),
-      amanha.getUTCMonth(),
-      amanha.getUTCDate(),
+      amanhaGmt4.getUTCFullYear(),
+      amanhaGmt4.getUTCMonth(),
+      amanhaGmt4.getUTCDate(),
       4,
       0,
-      0, // 00:00 GMT-4 = 04:00 UTC
+      0,
+      0,
     ),
   );
-  const fim = new Date(
-    Date.UTC(
-      amanha.getUTCFullYear(),
-      amanha.getUTCMonth(),
-      amanha.getUTCDate(),
-      27,
-      59,
-      59, // 23:59 GMT-4 = 27:59 UTC = próximo dia 03:59 UTC
-    ),
-  );
-  // Correção: 27h não existe — usar fim = inicio + 24h - 1s
-  fim.setTime(inicio.getTime() + 24 * 60 * 60 * 1000 - 1000);
+
+  // Fim: 23:59:59 GMT-4 = 03:59:59 UTC do dia seguinte
+  const fim = new Date(inicio.getTime() + 24 * 60 * 60 * 1000 - 1000);
 
   // 1. Buscar agendamentos de amanhã com status confirmado ou agendado
   const { data: agendamentos, error } = await supabase
