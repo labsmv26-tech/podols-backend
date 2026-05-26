@@ -38,6 +38,34 @@ router.post("/", authenticateToken, async (req, res) => {
   }
 
   try {
+    // ── Validação de conflito de horário ─────────────────────────────────────
+    // Bloqueia se já existe agendamento ativo no mesmo slot exato
+    const { data: conflito, error: erroConflito } = await supabase
+      .from("agendamentos")
+      .select("id, nome_paciente")
+      .eq("estabelecimento_id", estabelecimento_id)
+      .eq("data_hora", data_hora)
+      .neq("status", "cancelado")
+      .maybeSingle();
+
+    if (erroConflito) {
+      console.error(
+        "[agendamentos] Erro ao verificar conflito:",
+        erroConflito.message,
+      );
+      return res
+        .status(500)
+        .json({ error: "Erro ao verificar disponibilidade do horário" });
+    }
+
+    if (conflito) {
+      return res.status(409).json({
+        error: "Horário já ocupado",
+        detalhe: `Este horário está reservado para ${conflito.nome_paciente}.`,
+      });
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     const { data: agendamento, error } = await supabase
       .from("agendamentos")
       .insert({
@@ -163,11 +191,9 @@ router.patch("/:id", authenticateToken, async (req, res) => {
 
   const statusPermitidos = ["agendado", "cancelado", "realizado"];
   if (status && !statusPermitidos.includes(status)) {
-    return res
-      .status(400)
-      .json({
-        error: `Status inválido. Permitidos: ${statusPermitidos.join(", ")}`,
-      });
+    return res.status(400).json({
+      error: `Status inválido. Permitidos: ${statusPermitidos.join(", ")}`,
+    });
   }
 
   const estabelecimento_id = req.user.estabelecimento_id;

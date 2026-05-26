@@ -34,23 +34,60 @@ function formatarData(dataHora) {
   return `${diaSemana}, ${diaNum} às ${hora}`;
 }
 
+/**
+ * Envia lembrete via WhatsApp usando Evolution API
+ */
+async function enviarLembreteWhatsApp(
+  telefone,
+  nomePaciente,
+  dataFormatada,
+  nomeClinica,
+) {
+  const telefoneLimpo = telefone.replace(/\D/g, "");
+  const numero = telefoneLimpo.startsWith("55")
+    ? telefoneLimpo
+    : `55${telefoneLimpo}`;
+
+  const primeiroNome = nomePaciente.split(" ")[0];
+  const mensagem =
+    `Olá, ${primeiroNome}! 👋\n\n` +
+    `Lembramos que você tem uma consulta agendada para *amanhã*:\n\n` +
+    `📅 *${dataFormatada}*\n` +
+    `🏥 *${nomeClinica}*\n\n` +
+    `Em caso de dúvidas ou necessidade de reagendamento, entre em contato com a clínica.\n\n` +
+    `_Podols — Gestão Clínica para Podologia_`;
+
+  const res = await fetch(
+    `${process.env.EVOLUTION_API_URL}/message/sendText/podols`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: process.env.EVOLUTION_API_KEY,
+      },
+      body: JSON.stringify({
+        number: numero,
+        textMessage: { text: mensagem },
+      }),
+    },
+  );
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Evolution API ${res.status}: ${body}`);
+  }
+}
+
 export async function dispararLembretesD1() {
   console.log("[lembrete-d1] Iniciando verificação...");
 
-  // Amanhã em GMT-4: pegar UTC agora e subtrair 4h para saber que "dia" é em GMT-4
+  // Amanhã em GMT-4
   const agora = new Date();
-
-  // Offset GMT-4 em ms
   const offsetMs = 4 * 60 * 60 * 1000;
-
-  // "Agora" em GMT-4
   const agoraGmt4 = new Date(agora.getTime() - offsetMs);
-
-  // Amanhã em GMT-4 (só a data)
   const amanhaGmt4 = new Date(agoraGmt4);
   amanhaGmt4.setUTCDate(agoraGmt4.getUTCDate() + 1);
 
-  // Início: 00:00 GMT-4 = 04:00 UTC do dia amanhã
   const inicio = new Date(
     Date.UTC(
       amanhaGmt4.getUTCFullYear(),
@@ -62,22 +99,13 @@ export async function dispararLembretesD1() {
       0,
     ),
   );
-
-  // Fim: 23:59:59 GMT-4 = 03:59:59 UTC do dia seguinte
   const fim = new Date(inicio.getTime() + 24 * 60 * 60 * 1000 - 1000);
 
-  // 1. Buscar agendamentos de amanhã com status confirmado ou agendado
+  // 1. Buscar agendamentos de amanhã
   const { data: agendamentos, error } = await supabase
     .from("agendamentos")
     .select(
-      `
-      id,
-      nome_paciente,
-      data_hora,
-      estabelecimento_id,
-      paciente_id,
-      status
-    `,
+      "id, nome_paciente, data_hora, estabelecimento_id, paciente_id, status",
     )
     .in("status", ["agendado", "confirmado"])
     .gte("data_hora", inicio.toISOString())
@@ -97,93 +125,114 @@ export async function dispararLembretesD1() {
     `[lembrete-d1] ${agendamentos.length} agendamento(s) encontrado(s).`,
   );
 
-  // Coletar estabelecimento_ids únicos para buscar clínicas e prestadores
   const estabIds = [...new Set(agendamentos.map((a) => a.estabelecimento_id))];
 
-  // 2. Buscar nomes das clínicas
+  // 2. Buscar clínicas
   const { data: estabelecimentos } = await supabase
     .from("estabelecimentos")
     .select("id, nome")
     .in("id", estabIds);
 
-  // 3. Buscar telefone do prestador de cada clínica
+  // 3. Buscar telefone do prestador
   const { data: prestadores } = await supabase
     .from("profiles")
     .select("estabelecimento_id, telefone")
     .eq("role", "prestador")
     .in("estabelecimento_id", estabIds);
 
-  // Mapas para lookup rápido
   const mapaClinica = Object.fromEntries(
     (estabelecimentos || []).map((e) => [e.id, e.nome]),
   );
-  const mapaTelefone = Object.fromEntries(
+  const mapaTelefoneClinica = Object.fromEntries(
     (prestadores || []).map((p) => [p.estabelecimento_id, p.telefone]),
   );
 
-  // 4. Coletar paciente_ids para buscar emails
+  // 4. Buscar email E telefone dos pacientes ← adicionado: telefone
   const pacienteIds = agendamentos
     .filter((a) => a.paciente_id)
     .map((a) => a.paciente_id);
 
   const mapaEmail = {};
+  const mapaWhatsApp = {}; // ← novo
+
   if (pacienteIds.length > 0) {
     const { data: pacientes } = await supabase
       .from("pacientes")
-      .select("id, email")
+      .select("id, email, telefone") // ← adicionado: telefone
       .in("id", pacienteIds);
 
     (pacientes || []).forEach((p) => {
       mapaEmail[p.id] = p.email;
+      mapaWhatsApp[p.id] = p.telefone; // ← novo
     });
   }
 
-  // 5. Disparar e-mails
-  let enviados = 0;
+  // 5. Disparar lembretes
+  let emailEnviados = 0;
+  let wppEnviados = 0;
   let ignorados = 0;
 
   for (const ag of agendamentos) {
     const email = ag.paciente_id ? mapaEmail[ag.paciente_id] : null;
+    const telefone = ag.paciente_id ? mapaWhatsApp[ag.paciente_id] : null;
+    const nomeClinica = mapaClinica[ag.estabelecimento_id] ?? "sua clínica";
+    const telefoneClinica = mapaTelefoneClinica[ag.estabelecimento_id] ?? null;
+    const dataFormatada = formatarData(ag.data_hora);
 
-    if (!email) {
+    if (!email && !telefone) {
       console.log(
-        `[lembrete-d1] Sem email — agendamento ${ag.id} (${ag.nome_paciente}). Ignorado.`,
+        `[lembrete-d1] Sem contato — ${ag.id} (${ag.nome_paciente}). Ignorado.`,
       );
       ignorados++;
       continue;
     }
 
-    const nomeClinica = mapaClinica[ag.estabelecimento_id] ?? "sua clínica";
-    const telefoneClinica = mapaTelefone[ag.estabelecimento_id] ?? null;
-    const dataFormatada = formatarData(ag.data_hora);
+    // ── E-mail ──────────────────────────────────────────────────────────────
+    if (email) {
+      try {
+        await enviarLembreteConsulta(
+          email,
+          ag.nome_paciente,
+          dataFormatada,
+          nomeClinica,
+          telefoneClinica,
+        );
+        emailEnviados++;
+        console.log(`[lembrete-d1] ✓ Email → ${email} (${ag.nome_paciente})`);
+      } catch (err) {
+        console.error(`[lembrete-d1] ✗ Email falhou → ${email}:`, err.message);
+      }
+    }
 
-    try {
-      await enviarLembreteConsulta(
-        email,
-        ag.nome_paciente,
-        dataFormatada,
-        nomeClinica,
-        telefoneClinica,
-      );
-      enviados++;
-      console.log(
-        `[lembrete-d1] ✓ Enviado para ${email} (${ag.nome_paciente})`,
-      );
-    } catch (err) {
-      console.error(
-        `[lembrete-d1] ✗ Falha ao enviar para ${email}:`,
-        err.message,
-      );
+    // ── WhatsApp ─────────────────────────────────────────────────────────────
+    if (telefone) {
+      try {
+        await enviarLembreteWhatsApp(
+          telefone,
+          ag.nome_paciente,
+          dataFormatada,
+          nomeClinica,
+        );
+        wppEnviados++;
+        console.log(
+          `[lembrete-d1] ✓ WhatsApp → ${telefone} (${ag.nome_paciente})`,
+        );
+      } catch (err) {
+        console.error(
+          `[lembrete-d1] ✗ WhatsApp falhou → ${telefone}:`,
+          err.message,
+        );
+      }
     }
   }
 
   console.log(
-    `[lembrete-d1] Concluído — ${enviados} enviado(s), ${ignorados} ignorado(s) (sem email).`,
+    `[lembrete-d1] Concluído — ` +
+      `${emailEnviados} email(s), ${wppEnviados} WhatsApp(s), ${ignorados} ignorado(s).`,
   );
 }
 
 // ── Cron: todo dia às 18h00 GMT-4 (= 22h00 UTC) ──────────────────────────────
-// Formato: segundo minuto hora dia mês diaSemana
 cron.schedule("0 0 22 * * *", () => {
   dispararLembretesD1().catch((err) =>
     console.error("[lembrete-d1] Erro inesperado:", err),
