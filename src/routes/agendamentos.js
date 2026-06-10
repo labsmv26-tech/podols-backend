@@ -138,15 +138,22 @@ router.get("/", authenticateToken, async (req, res) => {
 
   const { data: dataParam, semana } = req.query;
 
-  // Calcular intervalo
-  const dataBase = dataParam ? new Date(dataParam) : new Date();
-  dataBase.setHours(0, 0, 0, 0);
+  // Calcular intervalo no fuso da clínica (GMT-4) — o servidor roda em UTC,
+  // então "hoje" sem offset explícito viraria o dia 4h mais cedo
+  const diaBase =
+    dataParam ??
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Porto_Velho",
+    }).format(new Date());
 
-  const dataFim = new Date(dataBase);
+  const dataBase = new Date(`${diaBase}T00:00:00-04:00`);
+
+  let dataFim;
   if (semana === "true") {
+    dataFim = new Date(dataBase);
     dataFim.setDate(dataFim.getDate() + 7);
   } else {
-    dataFim.setHours(23, 59, 59, 999);
+    dataFim = new Date(`${diaBase}T23:59:59.999-04:00`);
   }
 
   try {
