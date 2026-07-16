@@ -26,6 +26,7 @@ router.post("/", async (req, res) => {
     escore_eva,
     diagnostico,
     conduta,
+    proxima_consulta: proximaConsultaEscolhida,
   } = req.body;
 
   if (!paciente_id || !operador_id) {
@@ -42,7 +43,9 @@ router.post("/", async (req, res) => {
 
   // Calcular IWGDF
   const iwgdf = calcularIWGDF(dadosDiabComPulsos, dados_sistemicos);
-  const proxima_consulta = calcularProximaConsulta(iwgdf.retornoDias);
+  // A data escolhida pela profissional na conclusão prevalece sobre a sugestão
+  const proxima_consulta =
+    proximaConsultaEscolhida ?? calcularProximaConsulta(iwgdf.retornoDias);
 
   const payload = {
     paciente_id,
@@ -74,6 +77,35 @@ router.post("/", async (req, res) => {
     return res.status(500).json({ error: error.message });
   }
 
+  // Agendar alerta de retorno IWGDF (D-7) — não bloqueia o salvamento se falhar
+  if (proxima_consulta && iwgdf.risco !== null) {
+    try {
+      const dataAlerta = new Date(`${proxima_consulta}T12:00:00-04:00`);
+      dataAlerta.setDate(dataAlerta.getDate() - 7);
+
+      // Arquivar alertas pendentes anteriores do mesmo tipo para este paciente
+      await supabase
+        .from("alertas")
+        .update({ status: "enviado" })
+        .eq("paciente_id", paciente_id)
+        .eq("tipo", "retorno_iwgdf")
+        .eq("status", "pendente");
+
+      await supabase.from("alertas").insert({
+        paciente_id,
+        tipo: "retorno_iwgdf",
+        risco_iwgdf: iwgdf.risco,
+        agendado_para: dataAlerta.toISOString(),
+        status: "pendente",
+      });
+    } catch (errAlerta) {
+      console.error(
+        "[prontuarios] Erro ao agendar alerta de retorno:",
+        errAlerta.message,
+      );
+    }
+  }
+
   return res.status(201).json({
     prontuario: data,
     iwgdf: {
@@ -81,6 +113,27 @@ router.post("/", async (req, res) => {
       proxima_consulta,
       justificativa: iwgdf.justificativa,
     },
+  });
+});
+
+// POST /prontuarios/iwgdf-preview — calcula o risco sem salvar
+// Usado na etapa de conclusão para pré-sugerir a data de retorno
+// (path fixo antes da rota dinâmica /:paciente_id — lição 14)
+router.post("/iwgdf-preview", (req, res) => {
+  const { dados_diabeticos, dados_sistemicos, exame_fisico } = req.body;
+
+  const dadosDiabComPulsos = {
+    ...dados_diabeticos,
+    _pulsos_ausentes: avaliarPulsosAusentes(exame_fisico),
+  };
+
+  const iwgdf = calcularIWGDF(dadosDiabComPulsos, dados_sistemicos);
+
+  return res.json({
+    risco: iwgdf.risco,
+    retorno_dias: iwgdf.retornoDias,
+    proxima_consulta_sugerida: calcularProximaConsulta(iwgdf.retornoDias),
+    justificativa: iwgdf.justificativa,
   });
 });
 
