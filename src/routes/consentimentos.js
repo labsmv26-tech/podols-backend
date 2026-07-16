@@ -6,6 +6,7 @@ import { Router } from "express";
 import { createHash } from "crypto";
 import { supabase } from "../lib/supabase.js";
 import { authenticateToken } from "../lib/auth.js";
+import { enviarTexto } from "../lib/whatsapp.js";
 
 const router = Router();
 
@@ -245,45 +246,19 @@ router.post("/whatsapp/enviar", authenticateToken, async (req, res) => {
 
   // 3. Montar link e mensagem
   const link = `${process.env.APP_URL}/consentimento/${consentimento.token}`;
-  const numero = telefoneLimpo.startsWith("55")
-    ? telefoneLimpo
-    : `55${telefoneLimpo}`;
   const mensagem =
     `Olá! Sua podóloga solicita sua autorização para registro fotográfico do atendimento de hoje.\n\n` +
     `Acesse o link, leia o termo e confirme:\n${link}\n\n` +
     `O link expira em 24 horas.`;
 
-  // 4. Enviar via Evolution API
+  // 4. Enviar via Evolution API (lib/whatsapp.js)
   try {
-    const evolucaoRes = await fetch(
-      `${process.env.EVOLUTION_API_URL}/message/sendText/podols`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          apikey: process.env.EVOLUTION_API_KEY,
-        },
-        body: JSON.stringify({
-          number: numero,
-          textMessage: { text: mensagem },
-        }),
-      },
-    );
-
-    const evolucaoBody = await evolucaoRes.text();
-    console.log("[evolution] status:", evolucaoRes.status);
-    console.log("[evolution] body:", evolucaoBody);
-
-    if (!evolucaoRes.ok) {
-      return res
-        .status(502)
-        .json({ error: "Erro ao enviar WhatsApp.", detalhe: evolucaoBody });
-    }
+    await enviarTexto(telefoneLimpo, mensagem);
   } catch (e) {
-    console.error("[evolution] exception:", e.message);
+    console.error("[evolution] falha ao enviar:", e.message);
     return res
       .status(502)
-      .json({ error: "Erro ao conectar Evolution API.", detalhe: e.message });
+      .json({ error: "Erro ao enviar WhatsApp.", detalhe: e.message });
   }
 
   return res.json({ ok: true, token: consentimento.token });
@@ -373,9 +348,6 @@ router.post("/tcle/enviar", authenticateToken, async (req, res) => {
 
   // 4. Montar link e mensagem
   const link = `${process.env.APP_URL}/consentimento/tcle/${consentimento.token}`;
-  const numero = telefoneLimpo.startsWith("55")
-    ? telefoneLimpo
-    : `55${telefoneLimpo}`;
 
   const primeiroNome = (nome_paciente ?? "").split(" ")[0] || "você";
   const mensagem =
@@ -384,43 +356,16 @@ router.post("/tcle/enviar", authenticateToken, async (req, res) => {
     `Acesse o link abaixo, leia o termo e confirme:\n${link}\n\n` +
     `O link é válido por 30 dias. Qualquer dúvida, fale com nossa equipe.`;
 
-  // 5. Enviar via Evolution API
+  // 5. Enviar via Evolution API (lib/whatsapp.js)
+  // Não falha o cadastro — TCLE fica criado no banco mesmo se o WhatsApp falhar
   try {
-    const evolucaoRes = await fetch(
-      `${process.env.EVOLUTION_API_URL}/message/sendText/podols`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          apikey: process.env.EVOLUTION_API_KEY,
-        },
-        body: JSON.stringify({
-          number: numero,
-          textMessage: { text: mensagem },
-        }),
-      },
-    );
-
-    const evolucaoBody = await evolucaoRes.text();
-    console.log("[tcle/evolution] status:", evolucaoRes.status);
-    console.log("[tcle/evolution] body:", evolucaoBody);
-
-    if (!evolucaoRes.ok) {
-      // Não falha o cadastro — TCLE criado no banco, WhatsApp falhou
-      console.warn("[tcle] WhatsApp falhou mas TCLE registrado no banco.");
-      return res.status(207).json({
-        ok: false,
-        token: consentimento.token,
-        aviso: "TCLE criado mas falha ao enviar WhatsApp.",
-        detalhe: evolucaoBody,
-      });
-    }
+    await enviarTexto(telefoneLimpo, mensagem);
   } catch (e) {
-    console.error("[tcle/evolution] exception:", e.message);
+    console.error("[tcle/evolution] falha ao enviar:", e.message);
     return res.status(207).json({
       ok: false,
       token: consentimento.token,
-      aviso: "TCLE criado mas falha ao conectar Evolution API.",
+      aviso: "TCLE criado mas falha ao enviar WhatsApp.",
       detalhe: e.message,
     });
   }

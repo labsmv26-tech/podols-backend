@@ -6,6 +6,7 @@
 import cron from "node-cron";
 import { createClient } from "@supabase/supabase-js";
 import { enviarLembreteConsulta } from "../lib/mailer.js";
+import { enviarTexto } from "../lib/whatsapp.js";
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -35,7 +36,7 @@ function formatarData(dataHora) {
 }
 
 /**
- * Envia lembrete via WhatsApp usando Evolution API
+ * Envia lembrete via WhatsApp (Evolution API — ver lib/whatsapp.js)
  */
 async function enviarLembreteWhatsApp(
   telefone,
@@ -43,11 +44,6 @@ async function enviarLembreteWhatsApp(
   dataFormatada,
   nomeClinica,
 ) {
-  const telefoneLimpo = telefone.replace(/\D/g, "");
-  const numero = telefoneLimpo.startsWith("55")
-    ? telefoneLimpo
-    : `55${telefoneLimpo}`;
-
   const primeiroNome = nomePaciente.split(" ")[0];
   const mensagem =
     `Olá, ${primeiroNome}! 👋\n\n` +
@@ -57,25 +53,7 @@ async function enviarLembreteWhatsApp(
     `Em caso de dúvidas ou necessidade de reagendamento, entre em contato com a clínica.\n\n` +
     `_Podols — Gestão Clínica para Podologia_`;
 
-  const res = await fetch(
-    `${process.env.EVOLUTION_API_URL}/message/sendText/podols`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        apikey: process.env.EVOLUTION_API_KEY,
-      },
-      body: JSON.stringify({
-        number: numero,
-        textMessage: { text: mensagem },
-      }),
-    },
-  );
-
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Evolution API ${res.status}: ${body}`);
-  }
+  await enviarTexto(telefone, mensagem);
 }
 
 export async function dispararLembretesD1() {
